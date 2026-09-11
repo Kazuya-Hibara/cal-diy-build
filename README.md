@@ -1,5 +1,7 @@
 # cal-diy-build
 
+_現状: 個人利用の自前ビルドパイプライン（汎用ツールではありません）。_
+
 Self-hosted [cal.diy](https://github.com/calcom/cal.diy) (community-maintained cal.com, MIT) の
 **ビルド & 配備パイプライン**。upstream が Docker image / tagged release の供給を停止しているため
 (issue [#28995](https://github.com/calcom/cal.diy/issues/28995))、公開 repo の GitHub Actions
