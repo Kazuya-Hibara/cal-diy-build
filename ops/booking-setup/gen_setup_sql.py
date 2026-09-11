@@ -96,7 +96,7 @@ INSERT INTO "EventType"
 VALUES
   ('オンライン打ち合わせ（Google Meet）', 'meeting', {dtext(DESCRIPTION)}, {dq(LOCATIONS)}, 45, false, {USER_ID},
    '{{Scheduler}} 様 × 桧原 和也（Automate & Augment）',
-   'rolling', 60, true,
+   'rolling', 30, true,
    720, 0, 15, 30,
    :sched_id, 0, {dq(METADATA)}, {dq(BOOKING_FIELDS)},
    false, false, false, now())

@@ -58,7 +58,7 @@ curl -s -o /dev/null -w "%{http_code}\n" https://cal.kazuyahibara.com/kazuya/mee
 |---|---|---|
 | 稼働時間 (JST) | 日・月・火 14-22 / 水 14-20 / 金 14-17 / 木・土 off | `Schedule` "Default (JST)" (ops/booking-setup/setup.sql) |
 | 空き判定に使うカレンダー | contact@ (仕事) + kazuya20010611@gmail.com (個人、freeBusy) + k.hibara@ventus-jp.com (Ventus) | `SelectedCalendar` (contact@ の Google 認証 1 本で参照、個人 gmail の OAuth 接続は不要) |
-| event type | `/kazuya/meeting` 45 分既定・30/45/60 選択可・Google Meet・最短予約 12h 前・後バッファ 15 分・枠 30 分刻み・60 日先まで | `EventType` id 4 |
+| event type | `/kazuya/meeting` 45 分既定・30/45/60 選択可・Google Meet・最短予約 12h 前・後バッファ 15 分・枠 30 分刻み・30 日先まで | `EventType` id 4 |
 | 事前ヒアリング (予約フォーム) | ①いま一番の困りごと ②現在の AI 活用状況 ③AI をどこに・どう使いたいか (+任意の補足) — 回答は確認メールと Google カレンダーの説明欄に入る | `EventType.bookingFields` (SSOT = sidegig `docs/first-call-hearing.md`) |
 | リマインダー | 24h 前・1h 前に参加者へ (Meet URL・変更/キャンセル URL 付き)。予約が 24h 切ってからなら 24h 分は送らない。送信記録 = `ops.reminder_log` | `reminders/reminder.py` (5 分 poll) |
 
