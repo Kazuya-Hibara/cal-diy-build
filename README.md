@@ -15,7 +15,7 @@ Self-hosted [cal.diy](https://github.com/calcom/cal.diy) (community-maintained c
 | Image | `ghcr.io/kazuya-hibara/cal-diy:<sha12>` + `:latest` (public) |
 | 本番 | hostinger VPS `/docker/cal/` (compose + .env — SoR は VPS 側) |
 | 本番 URL | https://cal.kazuyahibara.com (alias: cal.srv1433172.hstgr.cloud) |
-| **予約リンク** | **https://cal.kazuyahibara.com/kazuya/meeting** — 45 分既定、相手が 30/45/60 を選択、Google Meet 自動発行、事前ヒアリング 3 問 (`ops/booking-setup/`) |
+| **予約リンク** | **https://cal.kazuyahibara.com/kazuya/meeting** — 45 分既定、相手が 30/45/60 を選択、Google Meet 自動発行、汎用フォーム (会社名・目的・相談内容 必須) (`ops/booking-setup/`)。導線 = HP /ja/contact・相談 LP・メール返信 |
 | メール送信 | Resend SMTP (`RESEND_API_KEY` in VPS .env、cal.com serverConfig が自動で smtp.resend.com を使う)。From = contact@kazuyahibara.com (Resend で kazuyahibara.com 検証済) |
 | リマインダー | sidecar `calcom-reminders` (`reminders/`) — 24h / 1h 前に参加者へ日本語メール。cal.diy は Workflows 機能を持たないため自前 |
 | n8n 連携 | WF `cal-booking-webhook` (tag: cal-diy) ← cal 側 webhook 全 16 イベント |
@@ -59,7 +59,7 @@ curl -s -o /dev/null -w "%{http_code}\n" https://cal.kazuyahibara.com/kazuya/mee
 | 稼働時間 (JST) | 日・月・火 14-22 / 水 14-20 / 金 14-17 / 木・土 off | `Schedule` "Default (JST)" (ops/booking-setup/setup.sql) |
 | 空き判定に使うカレンダー | contact@ (仕事) + kazuya20010611@gmail.com (個人、freeBusy) + k.hibara@ventus-jp.com (Ventus) | `SelectedCalendar` (contact@ の Google 認証 1 本で参照、個人 gmail の OAuth 接続は不要) |
 | event type | `/kazuya/meeting` 45 分既定・30/45/60 選択可・Google Meet・最短予約 12h 前・後バッファ 15 分・枠 30 分刻み・30 日先まで | `EventType` id 4 |
-| 事前ヒアリング (予約フォーム) | ①いま一番の困りごと ②現在の AI 活用状況 ③AI をどこに・どう使いたいか (+任意の補足) — 回答は確認メールと Google カレンダーの説明欄に入る | `EventType.bookingFields` (SSOT = sidegig `docs/first-call-hearing.md`) |
+| 予約フォーム (汎用 1 本) | 必須: 会社名・所属 / 面談の目的 (select 5 択) / ご相談内容 (何についての面談か)。任意: AI 活用状況 / AI をどう使いたいか / 補足 — 回答は確認メールと Google カレンダーの説明欄に入る。差し替えは `gen_setup_sql.py --update-fields` | `EventType.bookingFields` (SSOT = sidegig `docs/first-call-hearing.md`) |
 | リマインダー | 24h 前・1h 前に参加者へ (Meet URL・変更/キャンセル URL 付き)。予約が 24h 切ってからなら 24h 分は送らない。送信記録 = `ops.reminder_log` | `reminders/reminder.py` (5 分 poll) |
 
 設定変更は cal.diy の UI (`/event-types`, `/availability`) でも SQL でもよい — DB が正で、`setup.sql` は初期投入の記録。
