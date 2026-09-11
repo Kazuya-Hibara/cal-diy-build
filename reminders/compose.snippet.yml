@@ -1,0 +1,14 @@
+# Append under `services:` in /docker/cal/docker-compose.yml on the VPS (SoR is the VPS file).
+  calcom-reminders:
+    build: ./reminders
+    image: cal-diy-reminders:local
+    container_name: calcom-reminders
+    restart: unless-stopped
+    env_file: .env                      # RESEND_API_KEY / EMAIL_FROM / EMAIL_FROM_NAME / NEXT_PUBLIC_WEBAPP_URL
+    environment:
+      - DATABASE_URL=postgresql://calcom:${CALCOM_DB_PASSWORD}@calcom-db:5432/calcom
+      - REMINDER_POLL_SECONDS=300
+    depends_on:
+      - calcom-db
+    networks:
+      - cal_internal
