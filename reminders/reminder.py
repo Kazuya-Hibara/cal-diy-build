@@ -3,8 +3,9 @@
 
 cal.diy (community cal.com) ships without the Workflows feature, so reminder mails are sent by this
 sidecar instead. It polls the cal.com Postgres DB, picks accepted bookings whose reminder is due,
-mails every attendee (Japanese template, JST), and records each send in ops.reminder_log so a
-reminder is never sent twice. Mail transport mirrors cal.com's serverConfig: RESEND_API_KEY first,
+mails every attendee (Japanese template, JST), and records each send in ops.reminder_log to
+suppress repeats. SMTP delivery and database commit are not atomic: a crash between them can
+cause a repeat. Mail transport mirrors cal.com's serverConfig: RESEND_API_KEY first,
 EMAIL_SERVER_* second.
 
 CLI (for tests):  reminder.py --once [--dry-run] [--now 2026-09-13T20:01:00+09:00]
@@ -51,6 +52,7 @@ JOIN users u ON u.id = b."userId"
 WHERE b.status = 'accepted'
   AND b."startTime" > %(now)s
   AND b."startTime" <= %(until)s
+  AND (%(booking_uid)s::text IS NULL OR b.uid = %(booking_uid)s)
 ORDER BY b."startTime"
 """
 
@@ -123,17 +125,21 @@ def meet_url(row: dict) -> str | None:
     return None
 
 
-def build_message(kind: str, row: dict, attendee: dict, from_addr: str, from_name: str) -> EmailMessage:
+def build_message(kind: str, row: dict, attendee: dict, from_addr: str, from_name: str,
+                  now: datetime | None = None) -> EmailMessage:
     start, end = as_utc(row["startTime"]), as_utc(row["endTime"])
     minutes = int((end - start).total_seconds() // 60)
     url = meet_url(row)
-    when_word = "明日" if kind == "24h" else "本日"
+    now = as_utc(now or datetime.now(timezone.utc))
+    days_until = (start.astimezone(JST).date() - now.astimezone(JST).date()).days
+    when_word = {0: "本日", 1: "明日"}.get(days_until, f"{start.astimezone(JST):%m/%d}")
+    minutes_until = max(0, int((start - now).total_seconds() // 60))
     name = (attendee.get("name") or "").strip() or "ご担当者"
 
     if kind == "24h":
-        subject = f"【明日 {fmt_short_jst(start)}〜】桧原とのオンライン打ち合わせのご案内"
+        subject = f"【{when_word} {fmt_short_jst(start)}〜】桧原とのオンライン打ち合わせのご案内"
     else:
-        subject = f"【本日 {start.astimezone(JST):%H:%M}〜・1時間後】オンライン打ち合わせのご案内（Google Meet）"
+        subject = f"【{when_word} {start.astimezone(JST):%H:%M}〜・約{minutes_until}分後】オンライン打ち合わせのご案内（Google Meet）"
 
     lines = [
         f"{name} 様",
@@ -190,13 +196,14 @@ def due_reminders(row: dict, now: datetime):
         yield kind
 
 
-def run_once(conn, now: datetime, dry_run: bool) -> int:
+def run_once(conn, now: datetime, dry_run: bool, booking_uid: str | None = None) -> int:
     from_addr = os.environ.get("EMAIL_FROM", "contact@kazuyahibara.com")
     from_name = os.environ.get("EMAIL_FROM_NAME", "桧原 和也")
     sent = 0
     now_naive = now.astimezone(timezone.utc).replace(tzinfo=None)
     with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
-        cur.execute(QUERY, {"now": now_naive, "until": now_naive + LOOKAHEAD})
+        cur.execute(QUERY, {"now": now_naive, "until": now_naive + LOOKAHEAD,
+                            "booking_uid": booking_uid})
         rows = cur.fetchall()
     log.info("scan: %d accepted booking(s) in next %s", len(rows), LOOKAHEAD)
     for row in rows:
@@ -230,20 +237,29 @@ def main() -> int:
     ap.add_argument("--once", action="store_true", help="run a single scan and exit")
     ap.add_argument("--dry-run", action="store_true", help="do not send, do not record")
     ap.add_argument("--now", help="override current time (ISO 8601, for tests)")
+    ap.add_argument("--booking-uid", help="limit a --once scan to this booking UID (for isolated tests)")
     args = ap.parse_args()
+    if args.booking_uid is not None:
+        if not args.once:
+            ap.error("--booking-uid requires --once")
+        args.booking_uid = args.booking_uid.strip()
+        if not args.booking_uid:
+            ap.error("--booking-uid must not be blank")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stdout)
 
     dsn = os.environ["DATABASE_URL"]
     poll = int(os.environ.get("REMINDER_POLL_SECONDS", "300"))
     while True:
         try:
-            with psycopg.connect(dsn, connect_timeout=15) as conn:
+            # Keep the scan SELECT outside a transaction so each mail transaction commits
+            # independently; a later delivery failure must not roll back earlier send logs.
+            with psycopg.connect(dsn, connect_timeout=15, autocommit=True) as conn:
                 conn.execute(DDL)
                 conn.commit()
                 now = datetime.fromisoformat(args.now) if args.now else datetime.now(timezone.utc)
                 if now.tzinfo is None:
                     now = now.replace(tzinfo=JST)
-                n = run_once(conn, now, args.dry_run)
+                n = run_once(conn, now, args.dry_run, booking_uid=args.booking_uid)
                 log.info("done: %d reminder(s) %s", n, "would be sent" if args.dry_run else "sent")
         except Exception:
             log.exception("scan failed")

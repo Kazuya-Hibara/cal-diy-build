@@ -1,0 +1,6 @@
+services:
+  calcom:
+    environment:
+      NODE_OPTIONS: --require=/opt/cal-runtime/calendar-retry.cjs
+    volumes:
+      - ./runtime/calendar-retry.cjs:/opt/cal-runtime/calendar-retry.cjs:ro

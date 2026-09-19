@@ -72,8 +72,69 @@ rsync -a reminders/ hostinger:/docker/cal/reminders/
 ssh hostinger "cd /docker/cal && docker compose up -d --build calcom-reminders"
 # 動作確認 (送信せず判定だけ / 時刻を偽装して実送信テスト)
 ssh hostinger "docker exec calcom-reminders python reminder.py --once --dry-run"
-ssh hostinger "docker exec calcom-reminders python reminder.py --once --now 2026-09-13T20:01:00+09:00"
+ssh hostinger "docker exec calcom-reminders python reminder.py --once --booking-uid TEST_UID --now 2026-09-21T13:01:00+09:00 --dry-run"
+# Remove --dry-run only for an explicitly authorized disposable test booking.
 ssh hostinger "docker logs calcom-reminders --since 1h"
 ```
 
 E2E 実証 (2026-09-11): API 予約 → Google カレンダー + Meet URL 発行 → 確認メール 2 通 (参加者/主催者) → 偽装時刻で 24h/1h リマインダー 2 通 → 全て contact@ 受信箱で実受信を確認 → API キャンセル。
+
+## Booking review and runtime repair (2026-09-20)
+
+The public event now states that the first consultation is free, and explains attendee rescheduling
+and cancellation from confirmation email. Scheduling rules remain unchanged. The scoped update is:
+
+```bash
+python3 ops/booking-setup/gen_setup_sql.py --update-event > /tmp/cal-event-update.sql
+ssh hostinger 'docker exec -i calcom-db psql -U calcom -d calcom -v ON_ERROR_STOP=1' < /tmp/cal-event-update.sql
+```
+
+`--update-event` checks event ID 4, owner 1 and slug `meeting`, then changes only title, description,
+booking fields and update timestamp. `--update-fields` changes only the form. Preserve a DB snapshot
+before applying; `setup.sql` remains the historical initial setup, not a reconciliation script.
+
+Reminders now commit each successful send independently. Relative date and time wording uses the
+actual delivery time, including after downtime. SMTP acceptance and database commit cannot be one
+atomic operation: an interruption between them can still cause a duplicate. Test delivery must use
+`--once --booking-uid TEST_UID`; a nonexistent or cancelled UID selects no bookings. `--now` alone
+is not a safe production test because it evaluates all real bookings.
+
+Offline checks:
+
+```bash
+# Use an isolated Python environment with psycopg[binary]==3.2.*.
+python -m unittest discover -s reminders -p 'test_reminder.py'
+node --test ops/calendar-retry/test-calendar-retry.cjs
+```
+
+### Google Calendar rate-limit repair
+
+The pinned upstream creates an event, then patches its description/location with the Meet URL.
+A transient `403 rateLimitExceeded` on that second request left a successful-looking booking with
+no confirmation email and an empty calendar reference. The runtime preload in `ops/calendar-retry/`
+retries only Google Calendar v3 PATCH/PUT/DELETE requests with explicit rate-limit reasons, up to five
+times with exponential backoff (at most 34.75 seconds of waiting). POST creation, authentication
+errors and other hosts are unaffected. Persistent quota failures still require investigation.
+
+```bash
+ssh hostinger 'mkdir -p /docker/cal/runtime'
+scp ops/calendar-retry/calendar-retry.cjs hostinger:/docker/cal/runtime/calendar-retry.cjs
+# Merge rather than overwrite if a production override already contains unrelated settings.
+scp ops/calendar-retry/docker-compose.override.yml hostinger:/docker/cal/docker-compose.override.yml
+ssh hostinger 'cd /docker/cal && docker compose up -d --no-deps --force-recreate calcom'
+```
+
+The override is loaded by ordinary `docker compose` commands in `/docker/cal`. It mounts the
+preload read-only and sets `NODE_OPTIONS`; preserve this option when upgrading the upstream image.
+Verify both root and nested `google-auth-library/node_modules/gaxios` request wrappers after an
+upgrade and repeat the attendee booking/change/cancel flow. Roll back by removing only this mount
+and preload option from the override, then recreating `calcom`. No base image or credentials change.
+
+The preload preserves native 5xx/transport retries and excludes only its own rate-limit cases from
+Gaxios's native retry loop. Integration test: set `GAXIOS_TEST_MODULE` to the actual installed
+Gaxios package when running the Node suite; without it that one integration case is skipped.
+
+Review evidence: `/Users/kazuya/.project/goals/caldiy-astra-review-0920/REPORT.md` (Beads
+`kazuya-svgrm`). Persistent integration-failure reconciliation remains tracked as `kazuya-8d05q`.
+
+Reference: [Google Calendar API error handling](https://developers.google.com/workspace/calendar/api/guides/errors).
