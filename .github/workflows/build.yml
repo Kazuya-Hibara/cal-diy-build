@@ -7,6 +7,10 @@ on:
         description: "calcom/cal.diy commit SHA to build"
         required: true
         default: "b2c28a23ab5b53f2e3729657d23cccb50f64e18a"
+      node_image:
+        description: "Node base image replacing upstream's node:20 (EOL 2026-04-30)"
+        required: true
+        default: "node:22-bookworm"
 
 permissions:
   packages: write
@@ -28,9 +32,20 @@ jobs:
           repository: calcom/cal.diy
           ref: ${{ github.event.inputs.sha }}
 
-      - name: Set short sha tag
+      - name: Replace EOL node:20 base image
+        env:
+          NODE_IMAGE: ${{ github.event.inputs.node_image }}
+        run: |
+          sed -i -E "s#^FROM (--platform=[^ ]+ )?node:20( |$)#FROM \1${NODE_IMAGE}\2#" Dockerfile
+          grep -nE '^FROM' Dockerfile
+          ! grep -qE '^FROM .*node:20' Dockerfile
+
+      - name: Set image tag
         id: tag
-        run: echo "short=$(echo '${{ github.event.inputs.sha }}' | cut -c1-12)" >> "$GITHUB_OUTPUT"
+        run: |
+          short=$(echo '${{ github.event.inputs.sha }}' | cut -c1-12)
+          node=$(echo '${{ github.event.inputs.node_image }}' | sed -E 's/^node:([0-9]+).*/node\1/')
+          echo "short=${short}-${node}" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-buildx-action@v3
 
