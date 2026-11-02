@@ -128,10 +128,11 @@ jobs:
           docker logs smoke 2>&1 | tail -n 80
           [ "$ok" = 1 ]
           curl -sS http://localhost:3000/api/version; echo
-          code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/auth/login); echo "/auth/login $code"
-          [ "$code" = "200" ]
-          code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/); echo "/ $code"
-          [ "$code" = "307" ] || [ "$code" = "200" ]
+          # Empty DB redirects to the first-admin setup page, so follow redirects and expect a final 200.
+          for p in / /auth/login; do
+            out=$(curl -sL -o /dev/null -w '%{http_code} %{url_effective}' "http://localhost:3000$p"); echo "$p -> $out"
+            [ "${out%% *}" = "200" ]
+          done
           docker logs smoke 2>&1 | grep -q 'All migrations have been successfully applied\|migrations have been applied'
           seeded=$(docker logs smoke 2>&1 | grep -c 'Created app' || true); echo "seeded apps: $seeded"
           [ "$seeded" -gt 10 ]
