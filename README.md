@@ -12,6 +12,7 @@ Self-hosted [cal.diy](https://github.com/calcom/cal.diy) (community-maintained c
 | 要素 | 場所 |
 |---|---|
 | Image build | `.github/workflows/build.yml` (workflow_dispatch, SHA 入力) |
+| Slim image build | `.github/workflows/build-slim.yml` — 同じ upstream build stage + `docker/slim.Dockerfile.tail` (Next standalone だけを載せる runtime stage) + `docker/start-slim.sh`。空 DB での smoke test 後に `:<sha12>-node<N>-slim` を push (既存 tag は上書きしない、`:latest` は動かさない) |
 | Image | `ghcr.io/kazuya-hibara/cal-diy:<sha12>` + `:latest` (public) |
 | 本番 | hostinger VPS `/docker/cal/` (compose + .env — SoR は VPS 側) |
 | 本番 URL | https://cal.srv1433172.hstgr.cloud (正ドメイン cal.kazuyahibara.com は DNS 追加後) |
@@ -41,6 +42,12 @@ curl -s -o /dev/null -w "%{http_code}\n" https://cal.srv1433172.hstgr.cloud/kazu
 `sed -i` で旧 sha12 に戻して `docker compose up -d`。
 
 ## 設計メモ
+
+- **Slim image** (2026-11-03): upstream の runner は monorepo + node_modules を丸ごと COPY する (7.4GB)。
+  slim は standalone 出力 + static/public + prisma CLI (同 version) + esbuild で 1 file にした
+  seed-app-store だけを載せる。起動手順は upstream `start.sh` と同じ順 (placeholder 置換 → migrate deploy →
+  seed-app-store → server)。standalone は next.config.ts を起動時に評価しないので、next.config.ts が
+  起動時に入れる env の既定値 (NEXTAUTH_URL など、未設定の時だけ) を `start-slim.sh` が代わりに入れる
 
 - **Image はドメイン非依存**: Dockerfile は placeholder URL でビルドし、起動時に `start.sh` が
   `NEXT_PUBLIC_WEBAPP_URL` へ find/replace する。ドメイン変更 = VPS `.env` 編集 + 再起動のみ

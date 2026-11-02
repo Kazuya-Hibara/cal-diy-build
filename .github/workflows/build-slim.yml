@@ -1,0 +1,147 @@
+name: build-cal-diy-slim
+
+# Slim variant of build.yml: same upstream Dockerfile build stages, but the final image ships only
+# the Next standalone output (docker/slim.Dockerfile.tail) instead of the whole monorepo.
+# The image is smoke-tested against a throwaway Postgres before it is pushed.
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "calcom/cal.diy commit SHA to build"
+        required: true
+        default: "b2c28a23ab5b53f2e3729657d23cccb50f64e18a"
+      node_image:
+        description: "Node base image for upstream's build stages (replaces EOL node:20)"
+        required: true
+        default: "node:22-bookworm"
+      runtime_image:
+        description: "Base image for the slim runtime stage"
+        required: true
+        default: "node:22-bookworm-slim"
+
+permissions:
+  packages: write
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: calendso
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune -af
+          df -h /
+
+      - name: Checkout cal.diy at pinned SHA
+        uses: actions/checkout@v4
+        with:
+          repository: calcom/cal.diy
+          ref: ${{ github.event.inputs.sha }}
+
+      - name: Checkout this repo (slim Dockerfile tail + start script)
+        uses: actions/checkout@v4
+        with:
+          path: .cal-diy-build
+
+      - name: Compose Dockerfile (upstream stages + slim stages)
+        env:
+          NODE_IMAGE: ${{ github.event.inputs.node_image }}
+          RUNTIME_IMAGE: ${{ github.event.inputs.runtime_image }}
+        run: |
+          sed -i -E "s#^FROM (--platform=[^ ]+ )?node:20( |$)#FROM \1${NODE_IMAGE}\2#" Dockerfile
+          ! grep -qE '^FROM .*node:20' Dockerfile
+          sed "s#__RUNTIME_IMAGE__#${RUNTIME_IMAGE}#g" .cal-diy-build/docker/slim.Dockerfile.tail >> Dockerfile
+          ! grep -q '__RUNTIME_IMAGE__' Dockerfile
+          grep -nE '^FROM' Dockerfile
+
+      - name: Set image tag
+        id: tag
+        run: |
+          short=$(echo '${{ github.event.inputs.sha }}' | cut -c1-12)
+          node=$(echo '${{ github.event.inputs.node_image }}' | sed -E 's/^node:([0-9]+).*/node\1/')
+          echo "image=ghcr.io/kazuya-hibara/cal-diy:${short}-${node}-slim" >> "$GITHUB_OUTPUT"
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Refuse to overwrite an existing tag
+        run: |
+          if docker manifest inspect '${{ steps.tag.outputs.image }}' >/dev/null 2>&1; then
+            echo "tag already exists: ${{ steps.tag.outputs.image }}"; exit 1
+          fi
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build (load locally, push only after smoke test)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: slim
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: ${{ steps.tag.outputs.image }}
+          build-args: |
+            DATABASE_URL=postgresql://postgres:postgres@localhost:5432/calendso
+            CALCOM_TELEMETRY_DISABLED=1
+            MAX_OLD_SPACE_SIZE=6144
+
+      - name: Image size
+        run: docker image inspect '${{ steps.tag.outputs.image }}' --format '{{.Size}}'
+
+      - name: Smoke test (migrate from empty DB + seed + serve)
+        run: |
+          # Throwaway values for a throwaway DB, not secrets.
+          docker run -d --name smoke --network host \
+            -e DATABASE_URL=postgresql://postgres:postgres@localhost:5432/calendso \
+            -e DATABASE_DIRECT_URL=postgresql://postgres:postgres@localhost:5432/calendso \
+            -e NEXTAUTH_SECRET=smoke-test-not-a-secret \
+            -e CALENDSO_ENCRYPTION_KEY=smoke-test-not-a-secret-32chars \
+            -e NEXT_PUBLIC_WEBAPP_URL=http://localhost:3000 \
+            '${{ steps.tag.outputs.image }}'
+          ok=0
+          for i in $(seq 1 120); do
+            if [ "$(docker inspect -f '{{.State.Running}}' smoke)" != "true" ]; then echo "container exited"; break; fi
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/api/version || true)
+            if [ "$code" = "200" ]; then ok=1; break; fi
+            sleep 5
+          done
+          docker logs smoke 2>&1 | tail -n 80
+          [ "$ok" = 1 ]
+          curl -sS http://localhost:3000/api/version; echo
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/auth/login); echo "/auth/login $code"
+          [ "$code" = "200" ]
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/); echo "/ $code"
+          [ "$code" = "307" ] || [ "$code" = "200" ]
+          docker logs smoke 2>&1 | grep -q 'All migrations have been successfully applied\|migrations have been applied'
+          seeded=$(docker logs smoke 2>&1 | grep -c 'Created app' || true); echo "seeded apps: $seeded"
+          [ "$seeded" -gt 10 ]
+          for i in $(seq 1 30); do
+            h=$(docker inspect -f '{{.State.Health.Status}}' smoke); echo "health: $h"
+            [ "$h" = "healthy" ] && break
+            sleep 5
+          done
+          [ "$h" = "healthy" ]
+          docker rm -f smoke
+
+      - name: Push
+        run: docker push '${{ steps.tag.outputs.image }}'

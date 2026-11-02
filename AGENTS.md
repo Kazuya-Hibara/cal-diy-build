@@ -10,7 +10,8 @@
 ## 地図
 
 - `.github/workflows/build.yml` — 唯一の入口。workflow_dispatch (入力 `sha` / `node_image`) で upstream を checkout → node:20 を差し替え → build & push。
-- 出力 image — `ghcr.io/kazuya-hibara/cal-diy:<sha12>-node<N>` と `:latest` (public)。
+- `.github/workflows/build-slim.yml` + `docker/` — 軽い image (Next standalone のみ) の build。smoke test 後に `:<sha12>-node<N>-slim` を push。
+- 出力 image — `ghcr.io/kazuya-hibara/cal-diy:<sha12>-node<N>` と `:latest` (public)、slim は `:<sha12>-node<N>-slim`。
 - `README.md` — 構成表・Update 手順・設計メモ (詳細はここ)。
 - 本番 — Hostinger VPS の `/docker/cal/` (compose + .env)。設定の正は VPS 側で、この repo には無い。
 
