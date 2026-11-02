@@ -1,0 +1,65 @@
+
+# ---------------------------------------------------------------------------
+# Appended by cal-diy-build (.github/workflows/build-slim.yml).
+# The stages above are upstream's Dockerfile unchanged (only the node base image
+# is swapped). Upstream's `runner` stage copies the whole monorepo + node_modules
+# (~4.6GB layer); the `slim` stage below ships only the Next standalone output
+# (BUILD_STANDALONE=true is already set upstream) plus what upstream's start.sh
+# needs at boot: placeholder replacement, prisma migrate deploy, seed-app-store.
+# __RUNTIME_IMAGE__ is substituted by the workflow.
+# ---------------------------------------------------------------------------
+
+# seed-app-store.ts is run with ts-node upstream (needs the full node_modules).
+# Bundle it into one self-contained CJS file instead (prisma client, adapter-pg,
+# app-store metadata all inlined).
+FROM builder-two AS seed-bundle
+RUN mkdir -p /out \
+  && node_modules/.bin/esbuild scripts/seed-app-store.ts --bundle --platform=node --format=cjs \
+       --target=node20 --external:pg-native --log-level=warning --outfile=/out/seed-app-store.js \
+  && sed -n "s/.*TRIGGER_VERSION = '\(.*\)'.*/\1/p" apps/web/trigger.version.ts > /out/trigger-version \
+  && test -s /out/trigger-version \
+  && node -p 'require("/calcom/node_modules/prisma/package.json").version' > /out/prisma-version \
+  && cat /out/trigger-version /out/prisma-version
+
+# Prisma CLI (same version as the monorepo) for `prisma migrate deploy`.
+FROM __RUNTIME_IMAGE__ AS prisma-cli
+RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+WORKDIR /opt/prisma-cli
+COPY --from=seed-bundle /out/prisma-version /tmp/prisma-version
+RUN npm install --no-audit --no-fund --no-package-lock --omit=dev "prisma@$(cat /tmp/prisma-version)" \
+  && ./node_modules/.bin/prisma --version \
+  && ls node_modules/@prisma/engines \
+  && rm -rf /root/.npm /root/.cache
+
+FROM __RUNTIME_IMAGE__ AS slim
+
+WORKDIR /calcom
+
+RUN apt-get update && apt-get install -y --no-install-recommends netcat-openbsd wget openssl ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
+# Same /calcom layout as upstream, so scripts/replace-placeholder.sh (apps/web/.next, apps/web/public)
+# and the /calcom/packages/prisma/schema.prisma path keep working unchanged.
+COPY --from=builder-two /calcom/apps/web/.next/standalone ./
+COPY --from=builder-two /calcom/apps/web/.next/static ./apps/web/.next/static
+COPY --from=builder-two /calcom/apps/web/public ./apps/web/public
+COPY --from=builder-two /calcom/packages/prisma/schema.prisma ./packages/prisma/schema.prisma
+COPY --from=builder-two /calcom/packages/prisma/migrations ./packages/prisma/migrations
+COPY --from=builder-two /calcom/scripts/replace-placeholder.sh /calcom/scripts/wait-for-it.sh ./scripts/
+COPY --from=seed-bundle /out/seed-app-store.js /out/trigger-version ./scripts/
+COPY --from=prisma-cli /opt/prisma-cli /opt/prisma-cli
+COPY .cal-diy-build/docker/start-slim.sh ./scripts/start.sh
+RUN chmod +x scripts/*.sh && test -f apps/web/server.js
+
+ARG NEXT_PUBLIC_WEBAPP_URL=http://localhost:3000
+ENV NEXT_PUBLIC_WEBAPP_URL=$NEXT_PUBLIC_WEBAPP_URL \
+  BUILT_NEXT_PUBLIC_WEBAPP_URL=$NEXT_PUBLIC_WEBAPP_URL
+
+ENV NODE_ENV=production
+EXPOSE 3000
+
+HEALTHCHECK --interval=30s --timeout=30s --retries=5 \
+  CMD wget --spider http://localhost:3000 || exit 1
+
+CMD ["/calcom/scripts/start.sh"]
